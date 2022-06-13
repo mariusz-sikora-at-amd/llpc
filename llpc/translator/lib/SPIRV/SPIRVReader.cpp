@@ -316,24 +316,26 @@ Type *SPIRVToLLVM::transTypeWithOpcode<OpTypeForwardPointer>(SPIRVType *const sp
   // Forward pointers must always point to structs.
   assert(spvForwardPointerType->getPointerElementType()->isTypeStruct());
 
-  // We first have to map the pointed-to-struct to an opaque struct so we can have a forward reference to the struct.
-  StructType *const pointeeType = StructType::create(*m_context);
-
-  // Then we need to map our forward pointer itself, because the struct we are pointing to could use the pointer.
-  const unsigned addrSpace = SPIRSPIRVAddrSpaceMap::rmap(storageClass);
-  Type *const type = mapType(spvType, PointerType::get(pointeeType, addrSpace));
-
   const bool isBufferBlockPointer = storageClass == StorageClassStorageBuffer || storageClass == StorageClassUniform ||
                                     storageClass == StorageClassPushConstant ||
                                     storageClass == StorageClassPhysicalStorageBufferEXT;
 
-  // Finally we translate the struct we are pointing to create it.
+  // Translate the struct we are pointing to create it.
   StructType *const structType = cast<StructType>(
       transType(spvType->getPointerElementType(), matrixStride, isColumnMajor, true, isBufferBlockPointer));
 
-  pointeeType->setBody(structType->elements(), structType->isPacked());
+  // Map the pointed-to-struct to an opaque struct so we can have a forward reference to the struct.
+  StructType *pointeeType = nullptr;
+  if (structType->isLiteral())
+    pointeeType = StructType::get(*m_context, structType->elements(), structType->isPacked());
+  else {
+    pointeeType = StructType::create(*m_context, structType->getName());
+    pointeeType->setBody(structType->elements(), structType->isPacked());
+  }
 
-  return type;
+  // Then we need to map our forward pointer itself, because the struct we are pointing to could use the pointer.
+  const unsigned addrSpace = SPIRSPIRVAddrSpaceMap::rmap(storageClass);
+  return mapType(spvType, PointerType::get(pointeeType, addrSpace));
 }
 
 // =====================================================================================================================
