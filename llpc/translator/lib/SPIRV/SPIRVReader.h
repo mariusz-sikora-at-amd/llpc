@@ -213,6 +213,7 @@ private:
   typedef DenseMap<GlobalVariable *, SPIRVBuiltinVariableKind> BuiltinVarMap;
   typedef DenseMap<SPIRVType *, SmallVector<unsigned, 8>> RemappedTypeElementsMap;
   typedef DenseMap<SPIRVValue *, Type *> SPIRVAccessChainValueToLLVMRetTypeMap;
+  typedef DenseMap<Value *, Type *> LLVMValueToLLVMTypeMap;
 
   // A SPIRV value may be translated to a load instruction of a placeholder
   // global variable. This map records load instruction of these placeholders
@@ -245,6 +246,7 @@ private:
   // Hash map with correlation between (SPIR-V) OpAccessChain and its returned (dereferenced) type.
   // We have to store base type because opaque-pointers are removing information about dereferenced type.
   SPIRVAccessChainValueToLLVMRetTypeMap m_accessChainRetTypeMap;
+  LLVMValueToLLVMTypeMap m_rowMajorValueBaseTypeMap;
   std::map<std::string, unsigned> m_mangleNameToIndex;
   RemappedTypeElementsMap m_remappedTypeElements;
   DenseMap<Type *, bool> m_typesWithPadMap;
@@ -299,6 +301,19 @@ private:
     auto loc = m_accessChainRetTypeMap.find(v);
     if (loc == m_accessChainRetTypeMap.end())
       m_accessChainRetTypeMap[v] = t;
+  }
+
+  Type *tryGetRowMajorBaseType(Value *v) {
+    auto loc = m_rowMajorValueBaseTypeMap.find(v);
+    if (loc != m_rowMajorValueBaseTypeMap.end())
+      return loc->second;
+    return nullptr;
+  }
+
+  void tryAddRowMajorBaseType(Value *v, Type *t) {
+    auto loc = m_rowMajorValueBaseTypeMap.find(v);
+    if (loc == m_rowMajorValueBaseTypeMap.end())
+      m_rowMajorValueBaseTypeMap[v] = t;
   }
 
   void recordRemappedTypeElements(SPIRVType *bt, unsigned from, unsigned to);
