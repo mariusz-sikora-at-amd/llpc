@@ -1176,7 +1176,13 @@ bool SPIRVToLLVM::postProcessRowMajorMatrix() {
       valuesToRemove.push_back(call);
 
       Value *const matrix = call->getArgOperand(0);
-      Type *const destType = call->getType()->getPointerElementType();
+      Type *const destType = tryGetRowMajorBaseType(call);
+
+      // For call to rowMajor we should always get type.
+      if (!destType)
+        llvm_unreachable("Should never be called!");
+
+      assert(IS_OPAQUE_OR_POINTEE_TYPE_MATCHES(call->getType(), destType));
       assert(destType->isArrayTy());
 
       const unsigned columnCount = destType->getArrayNumElements();
@@ -1188,6 +1194,11 @@ bool SPIRVToLLVM::postProcessRowMajorMatrix() {
 
       // Initially populate the map with just our matrix source.
       valueMap[call] = matrix;
+
+      llvm::ValueMap<Value *, Type *> valueToTypeMap;
+
+      valueToTypeMap[call] = destType;
+      valueToTypeMap[matrix] = tryGetRowMajorBaseType(matrix);
 
       SmallVector<Value *, 8> workList(call->user_begin(), call->user_end());
 
@@ -1225,6 +1236,8 @@ bool SPIRVToLLVM::postProcessRowMajorMatrix() {
           assert(valueMap.count(getElemPtr->getPointerOperand()) > 0);
 
           Value *const remappedValue = valueMap[getElemPtr->getPointerOperand()];
+          assert(valueToTypeMap.count(remappedValue) > 0);
+          Type *const remappedBaseType = valueToTypeMap[remappedValue];
 
           SmallVector<Value *, 8> indices;
 
@@ -1249,20 +1262,33 @@ bool SPIRVToLLVM::postProcessRowMajorMatrix() {
 
             Value *const columnSplat = getBuilder()->CreateVectorSplat(rowCount, indices[1]);
 
-            Value *const newGetElemPtr = getBuilder()->CreateGEP(
-                remappedValueSplat->getType()->getScalarType()->getPointerElementType(), remappedValueSplat,
-                {getBuilder()->getInt32(0), rowSplat, getBuilder()->getInt32(0), columnSplat});
+            assert(IS_OPAQUE_OR_POINTEE_TYPE_MATCHES(remappedValueSplat->getType()->getScalarType(), remappedBaseType));
+
+            Value *newGetElemPtrIndices[] = {getBuilder()->getInt32(0), rowSplat, getBuilder()->getInt32(0),
+                                             columnSplat};
+
+            Value *const newGetElemPtr =
+                getBuilder()->CreateGEP(remappedBaseType, remappedValueSplat, newGetElemPtrIndices);
+
+            Type *const newGetElemBaseType = GetElementPtrInst::getIndexedType(remappedBaseType, newGetElemPtrIndices);
+            valueToTypeMap[newGetElemPtr] = newGetElemBaseType;
 
             // Check if we are loading a scalar element of the matrix or not.
-            if (indices.size() > 2)
-              valueMap[getElemPtr] = getBuilder()->CreateExtractElement(newGetElemPtr, indices[2]);
-            else
+            if (indices.size() > 2) {
+              Value *extractElem = getBuilder()->CreateExtractElement(newGetElemPtr, indices[2]);
+              valueMap[getElemPtr] = extractElem;
+
+              valueToTypeMap[extractElem] = GetElementPtrInst::getIndexedType(newGetElemBaseType, indices[2]);
+            } else
               valueMap[getElemPtr] = newGetElemPtr;
           } else {
             // If we get here it means we are doing a subsequent GEP on a matrix row.
             assert(remappedValue->getType()->isVectorTy());
             assert(cast<VectorType>(remappedValue->getType())->getElementType()->isPointerTy());
-            valueMap[getElemPtr] = getBuilder()->CreateExtractElement(remappedValue, indices[1]);
+            Value *const extractElem = getBuilder()->CreateExtractElement(remappedValue, indices[1]);
+            valueMap[getElemPtr] = extractElem;
+
+            valueToTypeMap[extractElem] = GetElementPtrInst::getIndexedType(remappedBaseType, indices[1]);
           }
 
           // Add all the users of this GEP to the worklist for processing.
@@ -1277,7 +1303,8 @@ bool SPIRVToLLVM::postProcessRowMajorMatrix() {
 
           Value *const pointer = valueMap[load->getPointerOperand()];
           Type *const pointerType = pointer->getType();
-          Type *const pointerElemType = load->getType()->getScalarType();
+          assert(valueToTypeMap.count(pointer) > 0);
+          Type *const pointerElemType = valueToTypeMap[pointer];
           // TODO: Remove this when LLPC will switch fully to opaque pointers.
           assert(IS_OPAQUE_OR_POINTEE_TYPE_MATCHES(pointerType->getScalarType(), pointerElemType));
 
@@ -1360,7 +1387,11 @@ bool SPIRVToLLVM::postProcessRowMajorMatrix() {
 
           Value *const pointer = valueMap[store->getPointerOperand()];
           Type *const pointerType = pointer->getType();
-          Type *const pointerElemType = pointer->getType()->getScalarType()->getPointerElementType();
+
+          assert(valueToTypeMap.count(pointer) > 0);
+          Type *pointerElemType = valueToTypeMap[pointer];
+          // TODO: Remove this when LLPC will switch fully to opaque pointers.
+          assert(IS_OPAQUE_OR_POINTEE_TYPE_MATCHES(pointer->getType()->getScalarType(), pointerElemType));
 
           // If the remapped pointer type isn't a pointer, it's a vector of pointers instead.
           if (!pointerType->isPointerTy()) {
@@ -1517,7 +1548,12 @@ std::pair<Type *, Value *> SPIRVToLLVM::createLaunderRowMajorMatrix(Type *const 
   FunctionType *const rowMajorFuncType = FunctionType::get(newMatrixPointerType, matrixPointerType, false);
   Function *const rowMajorFunc =
       Function::Create(rowMajorFuncType, GlobalValue::ExternalLinkage, SpirvLaunderRowMajor, m_m);
-  return std::make_pair(newMatrixType, getBuilder()->CreateCall(rowMajorFunc, pointerToMatrix));
+  Value *call = getBuilder()->CreateCall(rowMajorFunc, pointerToMatrix);
+
+  tryAddRowMajorBaseType(call, newMatrixType);
+  tryAddRowMajorBaseType(pointerToMatrix, matrixType);
+
+  return std::make_pair(newMatrixType, call);
 }
 
 // =====================================================================================================================
