@@ -5496,11 +5496,6 @@ Function *SPIRVToLLVM::transFunction(SPIRVFunction *bf) {
 // Prints LLVM-style name for type to raw_ostream
 static void printTypeName(Type *ty, raw_ostream &nameStream) {
   for (;;) {
-    if (auto pointerTy = dyn_cast<PointerType>(ty)) {
-      nameStream << "p" << pointerTy->getAddressSpace();
-      ty = pointerTy->getPointerElementType();
-      continue;
-    }
     if (auto arrayTy = dyn_cast<ArrayType>(ty)) {
       nameStream << "a" << arrayTy->getNumElements();
       ty = arrayTy->getElementType();
@@ -5518,6 +5513,10 @@ static void printTypeName(Type *ty, raw_ostream &nameStream) {
       }
     }
     nameStream << "]";
+    return;
+  }
+  if (auto pointerTy = dyn_cast<PointerType>(ty)) {
+    nameStream << "p" << pointerTy->getAddressSpace();
     return;
   }
   if (auto vecTy = dyn_cast<FixedVectorType>(ty)) {
@@ -8500,8 +8499,34 @@ Value *SPIRVToLLVM::transGLSLBuiltinFromExtInst(SPIRVExtInst *bc, BasicBlock *bb
 
   string mangledName(unmangledName);
   std::vector<Value *> args = transValue(bc->getArgumentValues(), bb->getParent(), bb);
-  appendTypeMangling(nullptr, args, mangledName);
-  FunctionType *funcTy = FunctionType::get(transType(bc->getType()), argTys, false);
+  Type *retFuncType = transType(bc->getType());
+  // TODO: This code is needed to have a possibility to turn on and off opaque-pointers.
+  // At some point this should be remove when we decide that we do not what to have
+  // a legacy pointers.
+  // We have to revisit all function operands and in case of pointers we will cast them
+  // to i8*. We are doing this because after the transition we will no longer have types
+  // like i8* or [2 x float] addrspace(64)*. We will have just "ptr" type.
+
+  // revisit function arguments
+  std::vector<Value *> castedArgs;
+  for (auto *arg : args) {
+    if (!arg->getType()->isOpaquePointerTy() && arg->getType()->isPointerTy())
+      castedArgs.push_back(getBuilder()->CreateBitCast(
+          arg, getBuilder()->getInt8Ty()->getPointerTo(arg->getType()->getPointerAddressSpace())));
+    else
+      castedArgs.push_back(arg);
+  }
+  // revisit arguments types
+  std::vector<Type *> castedArgTys;
+  for (auto *argTy : argTys) {
+    if (!argTy->isOpaquePointerTy() && argTy->isPointerTy())
+      castedArgTys.push_back(getBuilder()->getInt8Ty()->getPointerTo(argTy->getPointerAddressSpace()));
+    else
+      castedArgTys.push_back(argTy);
+  }
+
+  appendTypeMangling(retFuncType, castedArgs, mangledName);
+  FunctionType *funcTy = FunctionType::get(retFuncType, castedArgTys, false);
   Function *func = m_m->getFunction(mangledName);
   if (!func) {
     func = Function::Create(funcTy, GlobalValue::ExternalLinkage, mangledName, m_m);
@@ -8509,7 +8534,7 @@ Value *SPIRVToLLVM::transGLSLBuiltinFromExtInst(SPIRVExtInst *bc, BasicBlock *bb
     if (isFuncNoUnwind())
       func->addFnAttr(Attribute::NoUnwind);
   }
-  CallInst *call = CallInst::Create(func, args, bc->getName(), bb);
+  CallInst *call = CallInst::Create(func, castedArgs, bc->getName(), bb);
   setCallingConv(call);
   addFnAttr(m_context, call, Attribute::NoUnwind);
   return call;
