@@ -1798,7 +1798,17 @@ void SpirvLowerGlobal::lowerBufferBlock() {
 
               // Run the users of the GEP to check for any nonuniform calls.
               for (User *const user : getElemPtr->users()) {
-                CallInst *const call = dyn_cast<CallInst>(user);
+                CallInst *call = dyn_cast<CallInst>(user);
+
+		//TODO: Remove this !!
+		if (!call) {
+		  auto bitCast = dyn_cast<BitCastInst>(user);
+		  if (bitCast) {
+                    User *bitCastUser = bitCast->user_back();
+		    call = dyn_cast<CallInst>(bitCastUser);
+		  }
+		}
+
                 // If the user is not a call or the call is the function pointer call, bail.
                 if (!call)
                   continue;
