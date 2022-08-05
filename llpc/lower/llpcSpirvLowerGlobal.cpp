@@ -316,7 +316,7 @@ void SpirvLowerGlobal::handleCallInst(bool checkEmitCall, bool checkInterpCall) 
           auto loadSrc = callInst->getArgOperand(0);
 
           // TODO: Add comment here !! (remove this after the transition)
-          auto bitCast = cast<BitCastInst>(loadSrc);
+          auto bitCast = dyn_cast<BitCastInst>(loadSrc);
           if (bitCast)
             loadSrc = bitCast->getOperand(0);
 
@@ -2086,7 +2086,7 @@ void SpirvLowerGlobal::cleanupReturnBlock() {
 // @param callInst : "Call" instruction
 void SpirvLowerGlobal::interpolateInputElement(unsigned interpLoc, Value *auxInterpValue, CallInst &callInst) {
   Value *callOperand = callInst.getArgOperand(0);
-  auto bitCast = cast<BitCastInst>(callOperand);
+  auto bitCast = dyn_cast<BitCastInst>(callOperand);
   if (bitCast) {
     callOperand = bitCast->getOperand(0);
   }
