@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
   LLVMContext context;
   // Temporarily disable opaque pointers (llvm is making opaque the default).
   // TODO: Remove this once work complete on transition to opaque pointers.
-  context.setOpaquePointers(false);
+  //context.setOpaquePointers(false);
   LgcContext::initialize();
 
   // Set our category on options that we want to show in -help, and hide other options.
