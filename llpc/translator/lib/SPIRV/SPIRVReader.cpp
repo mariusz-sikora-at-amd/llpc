@@ -7116,7 +7116,7 @@ bool SPIRVToLLVM::checkContains64BitType(SPIRVType *bt) {
 
 bool SPIRVToLLVM::transShaderDecoration(SPIRVValue *bv, Value *v) {
   auto gv = dyn_cast<GlobalVariable>(v);
-  if (gv) {
+  if (gv && bv->getOpCode() == OpVariable) {
     auto as = gv->getType()->getAddressSpace();
     if (as == SPIRAS_Input || as == SPIRAS_Output) {
       // Translate decorations of inputs and outputs
