@@ -399,6 +399,33 @@ void SpirvLowerGlobal::handleLoadInstGlobal(LoadInst &loadInst, const unsigned a
   assert(metaNode);
   auto inOutMetaVal = mdconst::dyn_extract<Constant>(metaNode->getOperand(0));
 
+  Value *optionalVertexIdx = nullptr;
+
+  // This may happend when fold zero-index GEP is performed with opaque pointers
+  if (loadSrc->getType()->isOpaquePointerTy() && inOutTy != loadInst.getType()) {
+    // Check if zero index element in Global Variable is the same as load type.
+    Type *tempType = inOutTy;
+    do {
+      if (tempType->isStructTy()) {
+        tempType = tempType->getStructElementType(0);
+        inOutMetaVal = cast<Constant>(inOutMetaVal->getOperand(0));
+
+      } else if (tempType->isArrayTy()) {
+        tempType = tempType->getArrayElementType();
+        // If the input/outpt is arrayed, then outermost index might be used for vertex indexing.
+        inOutMetaVal = cast<Constant>(inOutMetaVal->getOperand(1));
+
+      } else if (tempType->isVectorTy()) {
+        tempType = cast<VectorType>(tempType)->getElementType();
+      } else {
+        assert(false);
+      }
+    } while (tempType != loadInst.getType());
+
+    inOutTy = tempType;
+    optionalVertexIdx = m_builder->getInt32(0);
+  }
+
   m_builder->SetInsertPoint(&loadInst);
 
   Value *loadValue = UndefValue::get(inOutTy);
@@ -415,7 +442,7 @@ void SpirvLowerGlobal::handleLoadInstGlobal(LoadInst &loadInst, const unsigned a
       loadValue = m_builder->CreateInsertValue(loadValue, elemValue, {i});
     }
   } else {
-    loadValue = addCallInstForInOutImport(inOutTy, addrSpace, inOutMetaVal, nullptr, 0, nullptr, nullptr,
+    loadValue = addCallInstForInOutImport(inOutTy, addrSpace, inOutMetaVal, nullptr, 0, nullptr, optionalVertexIdx,
                                           InterpLocUnknown, nullptr, false);
   }
   m_loadInsts.insert(&loadInst);
