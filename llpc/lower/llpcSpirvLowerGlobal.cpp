@@ -207,6 +207,60 @@ PreservedAnalyses SpirvLowerGlobal::run(Module &module, ModuleAnalysisManager &a
 }
 
 // =====================================================================================================================
+// Unpack GlobalVariable type and metadata as zero-index GEP is doing.
+// This method was introduced while transition to opaque pointers. Opaque pointers are
+// removing zero-index GEPs and we have mismatched of types while performing lowering of
+// Globals.
+//
+// @param[in/out] inOutTy : Type of GlobalVariable
+// @param[in/out] inOutMetaVal : Metadata of GlobalVariable
+// @param[in] loadStoreType : load / store instruction type which is using GV
+// @param[out] maxLocOffset : Max+1 location offset. This is the array size
+// @param[out] elemIdx : Element index used for element indexing
+// @param[out] vertexIdx : Index used for vertex indexing
+Type *SpirvLowerGlobal::unpackGlobalTypeAsZeroIndexGep(Type *inOutTy, Constant *outputMetaVal, Type *loadStoreType,
+                                                       unsigned *maxLocOffset, Value **elemIdx, Value **vertexIdx) {
+
+  // Stop unpacking if type of GV and load/store are the same.
+  if (inOutTy == loadStoreType)
+    return loadStoreType;
+
+  // We are interested only with final type of GV, so we are
+  // clearing elemIdx, vertexIdx and maxLocOffset each time unpack
+  // is called.
+  if (elemIdx)
+    *elemIdx = nullptr;
+
+  if (vertexIdx)
+    *vertexIdx = nullptr;
+
+  if (maxLocOffset)
+    *maxLocOffset = 0;
+
+  if (inOutTy->isStructTy()) {
+    inOutTy = inOutTy->getStructElementType(0);
+    outputMetaVal = cast<Constant>(outputMetaVal->getOperand(0));
+  } else if (inOutTy->isArrayTy()) {
+    if (maxLocOffset)
+      inOutTy->getArrayNumElements();
+    inOutTy = inOutTy->getArrayElementType();
+    outputMetaVal = cast<Constant>(outputMetaVal->getOperand(1));
+    if (elemIdx)
+      *elemIdx = m_builder->getInt32(0);
+    if (vertexIdx)
+      *vertexIdx = m_builder->getInt32(0);
+  } else if (inOutTy->isVectorTy()) {
+    inOutTy = cast<VectorType>(inOutTy)->getElementType();
+    if (elemIdx)
+      *elemIdx = m_builder->getInt32(0);
+  } else {
+    llvm_unreachable("Should never be called!");
+  }
+
+  return unpackGlobalTypeAsZeroIndexGep(inOutTy, outputMetaVal, loadStoreType, maxLocOffset, elemIdx, vertexIdx);
+}
+
+// =====================================================================================================================
 // Executes this SPIR-V lowering pass on the specified LLVM module.
 //
 // @param [in/out] module : LLVM module to be run on
@@ -393,6 +447,13 @@ void SpirvLowerGlobal::handleLoadInstGlobal(LoadInst &loadInst, const unsigned a
   assert(metaNode);
   auto inOutMetaVal = mdconst::dyn_extract<Constant>(metaNode->getOperand(0));
 
+  Value *vertexIdx = nullptr;
+  Value *elemIdx = nullptr;
+
+  // This may happen when fold zero-index GEP is performed with opaque pointers
+  if (inOutTy != loadInst.getType())
+    inOutTy = unpackGlobalTypeAsZeroIndexGep(inOutTy, inOutMetaVal, loadInst.getType(), nullptr, &elemIdx, &vertexIdx);
+
   m_builder->SetInsertPoint(&loadInst);
 
   Value *loadValue = UndefValue::get(inOutTy);
@@ -404,13 +465,13 @@ void SpirvLowerGlobal::handleLoadInstGlobal(LoadInst &loadInst, const unsigned a
 
     const unsigned elemCount = inOutTy->getArrayNumElements();
     for (unsigned i = 0; i < elemCount; ++i) {
-      Value *vertexIdx = m_builder->getInt32(i);
-      auto elemValue = addCallInstForInOutImport(elemTy, addrSpace, elemMeta, nullptr, 0, nullptr, vertexIdx,
+      Value *arraysVertexIdx = m_builder->getInt32(i);
+      auto elemValue = addCallInstForInOutImport(elemTy, addrSpace, elemMeta, nullptr, 0, nullptr, arraysVertexIdx,
                                                  InterpLocUnknown, nullptr, false);
       loadValue = m_builder->CreateInsertValue(loadValue, elemValue, {i});
     }
   } else {
-    loadValue = addCallInstForInOutImport(inOutTy, addrSpace, inOutMetaVal, nullptr, 0, nullptr, nullptr,
+    loadValue = addCallInstForInOutImport(inOutTy, addrSpace, inOutMetaVal, nullptr, 0, elemIdx, vertexIdx,
                                           InterpLocUnknown, nullptr, false);
   }
   m_loadInsts.insert(&loadInst);
@@ -454,7 +515,7 @@ void SpirvLowerGlobal::handleLoadInstGEP(GetElementPtrInst *const getElemPtr, Lo
   }
 
   Value *loadValue = loadInOutMember(inOutTy, addrSpace, indexOperands, 0, inOutMetaVal, nullptr, vertexIdx,
-                                     InterpLocUnknown, nullptr, false);
+                                     InterpLocUnknown, nullptr, false, loadInst.getType());
   m_loadInsts.insert(&loadInst);
   loadInst.replaceAllUsesWith(loadValue);
 }
@@ -511,6 +572,14 @@ void SpirvLowerGlobal::handleStoreInstGlobal(StoreInst &storeInst) {
   assert(metaNode);
   auto outputMetaVal = mdconst::dyn_extract<Constant>(metaNode->getOperand(0));
 
+  unsigned maxLocOffset = 0;
+  Value *elemIdx = nullptr;
+  Type *storeInstType = storeInst.getValueOperand()->getType();
+
+  // This may happen when fold zero-index GEP is performed with opaque pointers
+  if (outputy != storeInstType)
+    outputy = unpackGlobalTypeAsZeroIndexGep(outputy, outputMetaVal, storeInstType, &maxLocOffset, &elemIdx, nullptr);
+
   // If the output is arrayed, the outermost dimension might for vertex indexing
   if (outputy->isArrayTy() && hasVertexIdx(*outputMetaVal)) {
     auto elemMeta = cast<Constant>(outputMetaVal->getOperand(1));
@@ -523,7 +592,8 @@ void SpirvLowerGlobal::handleStoreInstGlobal(StoreInst &storeInst) {
                                  InvalidValue);
     }
   } else {
-    addCallInstForOutputExport(storeValue, outputMetaVal, nullptr, 0, InvalidValue, 0, nullptr, nullptr, InvalidValue);
+    addCallInstForOutputExport(storeValue, outputMetaVal, nullptr, maxLocOffset, InvalidValue, 0, elemIdx, nullptr,
+                               InvalidValue);
   }
   m_storeInsts.insert(&storeInst);
 }
@@ -1507,14 +1577,20 @@ Value *SpirvLowerGlobal::loadDynamicIndexedMembers(Type *inOutTy, unsigned addrS
 // @param auxInterpValue : Auxiliary value of interpolation (valid for fragment shader): - Sample ID for
 // "InterpLocSample" - Offset from the center of the pixel for "InterpLocCenter" - Vertex no. (0 ~ 2) for
 // "InterpLocCustom"
+// @param isPerVertexDimension
+// @param loadType : Type of load instruction.
 Value *SpirvLowerGlobal::loadInOutMember(Type *inOutTy, unsigned addrSpace, ArrayRef<Value *> indexOperands,
                                          unsigned maxLocOffset, Constant *inOutMetaVal, Value *locOffset,
                                          Value *vertexIdx, unsigned interpLoc, Value *auxInterpValue,
-                                         bool isPerVertexDimension) {
+                                         bool isPerVertexDimension, Type *loadType) {
   assert(m_shaderStage == ShaderStageTessControl || m_shaderStage == ShaderStageTessEval ||
          m_shaderStage == ShaderStageFragment);
 
   if (indexOperands.empty()) {
+    // This may happen when fold zero-index GEP is performed with opaque pointers
+    if (loadType != inOutTy)
+      inOutTy = unpackGlobalTypeAsZeroIndexGep(inOutTy, inOutMetaVal, loadType, nullptr, nullptr, nullptr);
+
     // All indices have been processed
     return addCallInstForInOutImport(inOutTy, addrSpace, inOutMetaVal, locOffset, maxLocOffset, nullptr, vertexIdx,
                                      interpLoc, auxInterpValue, isPerVertexDimension);
@@ -1564,7 +1640,7 @@ Value *SpirvLowerGlobal::loadInOutMember(Type *inOutTy, unsigned addrSpace, Arra
     }
 
     return loadInOutMember(elemTy, addrSpace, indexOperands.drop_front(), maxLocOffset, elemMeta, elemLocOffset,
-                           vertexIdx, interpLoc, auxInterpValue, inOutMeta.PerVertexDimension);
+                           vertexIdx, interpLoc, auxInterpValue, inOutMeta.PerVertexDimension, loadType);
   }
 
   if (inOutTy->isStructTy()) {
@@ -1575,7 +1651,7 @@ Value *SpirvLowerGlobal::loadInOutMember(Type *inOutTy, unsigned addrSpace, Arra
     auto memberMeta = cast<Constant>(inOutMetaVal->getOperand(memberIdx));
 
     return loadInOutMember(memberTy, addrSpace, indexOperands.drop_front(), maxLocOffset, memberMeta, locOffset,
-                           vertexIdx, interpLoc, auxInterpValue, isPerVertexDimension);
+                           vertexIdx, interpLoc, auxInterpValue, isPerVertexDimension, loadType);
   }
 
   if (inOutTy->isVectorTy()) {
@@ -2096,7 +2172,7 @@ void SpirvLowerGlobal::interpolateInputElement(unsigned interpLoc, Value *auxInt
 
   if (getElemPtr->hasAllConstantIndices()) {
     auto loadValue = loadInOutMember(inputTy, SPIRAS_Input, makeArrayRef(indexOperands).drop_front(), 0, inputMeta,
-                                     nullptr, nullptr, interpLoc, auxInterpValue, false);
+                                     nullptr, nullptr, interpLoc, auxInterpValue, false, nullptr);
 
     m_interpCalls.insert(&callInst);
     callInst.replaceAllUsesWith(loadValue);

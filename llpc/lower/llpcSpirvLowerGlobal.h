@@ -77,6 +77,9 @@ private:
 
   void cleanupReturnBlock();
 
+  Type *unpackGlobalTypeAsZeroIndexGep(Type *inOutTy, Constant *outputMetaVal, Type *loadStoreType,
+                                       unsigned *maxLocOffset, Value **elemIdx, Value **vertexIdx);
+
   llvm::Value *addCallInstForInOutImport(llvm::Type *inOutTy, unsigned addrSpace, llvm::Constant *inOutMeta,
                                          llvm::Value *startLoc, unsigned maxLocOffset, llvm::Value *compIdx,
                                          llvm::Value *vertexIdx, unsigned interpLoc, llvm::Value *interpInfo,
@@ -93,7 +96,7 @@ private:
   llvm::Value *loadInOutMember(llvm::Type *inOutTy, unsigned addrSpace, llvm::ArrayRef<llvm::Value *> indexOperands,
                                unsigned maxLocOffset, llvm::Constant *inOutMeta, llvm::Value *locOffset,
                                llvm::Value *vertexIdx, unsigned interpLoc, llvm::Value *interpInfo,
-                               bool isPerVertexDimension);
+                               bool isPerVertexDimension, Type *loadType);
 
   void storeOutputMember(llvm::Type *outputTy, llvm::Value *storeValue, llvm::ArrayRef<llvm::Value *> indexOperands,
                          unsigned maxLocOffset, llvm::Constant *outputMeta, llvm::Value *locOffset,
