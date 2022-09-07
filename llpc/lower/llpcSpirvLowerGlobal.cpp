@@ -543,6 +543,31 @@ void SpirvLowerGlobal::handleStoreInstGlobal(StoreInst &storeInst) {
   assert(metaNode);
   auto outputMetaVal = mdconst::dyn_extract<Constant>(metaNode->getOperand(0));
 
+  unsigned maxLocOffset = 0;
+  Value *elemIdx = nullptr;
+
+  if (storeDest->getType()->isOpaquePointerTy() && outputy != storeInst.getValueOperand()->getType()) {
+
+    elemIdx = m_builder->getInt32(0);
+    Type *tempType = outputy;
+    do {
+      if (tempType->isStructTy()) {
+        tempType = tempType->getStructElementType(0);
+        outputMetaVal = cast<Constant>(outputMetaVal->getOperand(0));
+      } else if (tempType->isArrayTy()) {
+        maxLocOffset = tempType->getArrayNumElements();
+        tempType = tempType->getArrayElementType();
+        outputMetaVal = cast<Constant>(outputMetaVal->getOperand(1));
+      } else if (tempType->isVectorTy()) {
+        tempType = cast<VectorType>(tempType)->getElementType();
+      } else {
+        assert(false);
+      }
+    } while (tempType != storeInst.getValueOperand()->getType());
+
+    outputy = tempType;
+  }
+
   // If the input/output is arrayed, the outermost dimension might for vertex indexing
   if (outputy->isArrayTy() && hasVertexIdx(*outputMetaVal)) {
     auto elemMeta = cast<Constant>(outputMetaVal->getOperand(1));
@@ -554,7 +579,8 @@ void SpirvLowerGlobal::handleStoreInstGlobal(StoreInst &storeInst) {
       addCallInstForOutputExport(elemValue, elemMeta, nullptr, 0, InvalidValue, 0, nullptr, vertexIdx, InvalidValue);
     }
   } else {
-    addCallInstForOutputExport(storeValue, outputMetaVal, nullptr, 0, InvalidValue, 0, nullptr, nullptr, InvalidValue);
+    addCallInstForOutputExport(storeValue, outputMetaVal, nullptr, maxLocOffset, InvalidValue, 0, elemIdx, nullptr,
+                               InvalidValue);
   }
   m_storeInsts.insert(&storeInst);
 }
