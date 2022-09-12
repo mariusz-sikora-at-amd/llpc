@@ -1735,6 +1735,7 @@ void SpirvLowerGlobal::lowerBufferBlock() {
     BitCastInst *bitCastInst;                         // The user is a bitCast
     SelectInst *selectInst;                           // The user is a select
     SmallVector<GetElementPtrInst *> getElemPtrInsts; // The user is a GEP. If the user is a select, we store its users.
+    Value *loadStoreInst;
   };
 
   // Skip the globals that are handled with previous global.
@@ -1797,6 +1798,10 @@ void SpirvLowerGlobal::lowerBufferBlock() {
               // We need to modify the bitcast if we did not find a GEP.
               assert(bitCast->getOperand(0) == &global);
               replaceInstsInfo.bitCastInst = bitCast;
+            } else if (auto *load = dyn_cast<LoadInst>(inst)) {
+              replaceInstsInfo.loadStoreInst = load;
+            } else if (auto *store = dyn_cast<StoreInst>(inst)) {
+              replaceInstsInfo.loadStoreInst = store;
             } else {
               // The users of the select must be a GEP.
               SelectInst *selectInst = cast<SelectInst>(inst);
@@ -1830,6 +1835,17 @@ void SpirvLowerGlobal::lowerBufferBlock() {
               m_builder->CreateInvariantStart(bufferDesc);
 
             replaceInstsInfo.bitCastInst->replaceUsesOfWith(&global, m_builder->CreateBitCast(bufferDesc, blockType));
+          } else if (replaceInstsInfo.loadStoreInst) {
+            m_builder->SetInsertPoint(cast<Instruction>(replaceInstsInfo.loadStoreInst));
+
+            Value *const bufferDesc = m_builder->CreateLoadBufferDesc(
+                descSet, binding, m_builder->getInt32(0), global.isConstant() ? 0 : lgc::Builder::BufferFlagWritten,
+                m_builder->getInt8Ty());
+
+            if (global.isConstant())
+              m_builder->CreateInvariantStart(bufferDesc);
+
+            cast<Instruction>(replaceInstsInfo.loadStoreInst)->replaceUsesOfWith(&global, bufferDesc);
           } else {
             assert(!replaceInstsInfo.getElemPtrInsts.empty());
 
