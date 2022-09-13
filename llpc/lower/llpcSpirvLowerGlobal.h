@@ -93,7 +93,7 @@ private:
   llvm::Value *loadInOutMember(llvm::Type *inOutTy, unsigned addrSpace, llvm::ArrayRef<llvm::Value *> indexOperands,
                                unsigned maxLocOffset, llvm::Constant *inOutMeta, llvm::Value *locOffset,
                                llvm::Value *vertexIdx, unsigned interpLoc, llvm::Value *interpInfo,
-                               bool isPerVertexDimension);
+                               bool isPerVertexDimension, Type *loadType);
 
   void storeOutputMember(llvm::Type *outputTy, llvm::Value *storeValue, llvm::ArrayRef<llvm::Value *> indexOperands,
                          unsigned maxLocOffset, llvm::Constant *outputMeta, llvm::Value *locOffset,
