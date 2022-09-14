@@ -410,12 +410,14 @@ void SpirvLowerGlobal::handleLoadInstGlobal(LoadInst &loadInst, const unsigned a
       if (tempType->isStructTy()) {
         tempType = tempType->getStructElementType(0);
         inOutMetaVal = cast<Constant>(inOutMetaVal->getOperand(0));
+        elemIdx = nullptr;
 
       } else if (tempType->isArrayTy()) {
         tempType = tempType->getArrayElementType();
         // If the input/outpt is arrayed, then outermost index might be used for vertex indexing.
         inOutMetaVal = cast<Constant>(inOutMetaVal->getOperand(1));
         optionalVertexIdx = m_builder->getInt32(0);
+        elemIdx = m_builder->getInt32(0);
 
       } else if (tempType->isVectorTy()) {
         tempType = cast<VectorType>(tempType)->getElementType();
