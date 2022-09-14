@@ -64,6 +64,8 @@ opt<std::string> LogFileDbgs("log-file-dbgs", desc("Name of the file to log info
 opt<std::string> LogFileOuts("log-file-outs", desc("Name of the file to log info from LLPC_OUTS() and LLPC_ERRS()"),
                              value_desc("filename"), init(""));
 
+opt<bool> OpaquePointers("amd-opaque-pointers", desc("Enable LLPC opaque-pointers"), init(false));
+
 } // namespace cl
 
 } // namespace llvm
@@ -71,7 +73,9 @@ opt<std::string> LogFileOuts("log-file-outs", desc("Name of the file to log info
 using namespace llvm;
 
 namespace Llpc {
-
+bool GetOpaquePointersFlag() {
+  return cl::OpaquePointers;
+}
 // =====================================================================================================================
 // Gets the value of option "allow-out".
 bool EnableOuts() {

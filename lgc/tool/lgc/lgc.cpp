@@ -80,6 +80,8 @@ cl::opt<unsigned> PalAbiVersion("pal-abi-version", cl::init(0xFFFFFFFF), cl::cat
 
 // -v: enable verbose output
 cl::opt<bool> VerboseOutput("v", cl::cat(LgcCategory), cl::desc("Enable verbose output"), cl::init(false));
+
+opt<bool> OpaquePointers("amd-opaque-pointers", desc("Enable LLPC opaque-pointers"), init(false));
 } // anonymous namespace
 
 // =====================================================================================================================
@@ -115,7 +117,7 @@ int main(int argc, char **argv) {
   LLVMContext context;
   // Temporarily disable opaque pointers (llvm is making opaque the default).
   // TODO: Remove this once work complete on transition to opaque pointers.
-  //context.setOpaquePointers(false);
+  context.setOpaquePointers(OpaquePointers);
   LgcContext::initialize();
 
   // Set our category on options that we want to show in -help, and hide other options.
