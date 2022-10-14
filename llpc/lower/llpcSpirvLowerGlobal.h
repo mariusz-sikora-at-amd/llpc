@@ -77,7 +77,7 @@ private:
 
   void cleanupReturnBlock();
 
-  Type *unpackGlobalTypeAsZeroIndexGep(Type *inOutTy, Constant *outputMetaVal, Type *loadStoreType,
+  Type *unpackGlobalTypeAsZeroIndexGep(Type *inOutTy, Constant *&outputMetaVal, Type *loadStoreType,
                                        unsigned *maxLocOffset, Value **elemIdx, Value **vertexIdx);
 
   llvm::Value *addCallInstForInOutImport(llvm::Type *inOutTy, unsigned addrSpace, llvm::Constant *inOutMeta,

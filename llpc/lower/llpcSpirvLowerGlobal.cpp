@@ -218,7 +218,7 @@ PreservedAnalyses SpirvLowerGlobal::run(Module &module, ModuleAnalysisManager &a
 // @param[out] maxLocOffset : Max+1 location offset. This is the array size
 // @param[out] elemIdx : Element index used for element indexing
 // @param[out] vertexIdx : Index used for vertex indexing
-Type *SpirvLowerGlobal::unpackGlobalTypeAsZeroIndexGep(Type *inOutTy, Constant *outputMetaVal, Type *loadStoreType,
+Type *SpirvLowerGlobal::unpackGlobalTypeAsZeroIndexGep(Type *inOutTy, Constant *&outputMetaVal, Type *loadStoreType,
                                                        unsigned *maxLocOffset, Value **elemIdx, Value **vertexIdx) {
 
   // Stop unpacking if type of GV and load/store are the same.
