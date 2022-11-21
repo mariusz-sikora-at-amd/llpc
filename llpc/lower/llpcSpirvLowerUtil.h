@@ -31,13 +31,22 @@
 #pragma once
 
 #include "llpc.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace llvm {
 
 class Function;
 class Module;
+class Value;
+class Type;
 
 } // namespace llvm
+
+namespace lgc {
+
+class Builder;
+
+} // namespace lgc
 
 namespace Llpc {
 
@@ -58,5 +67,9 @@ void setShaderStageToModule(llvm::Module *module, ShaderStage shaderStage);
 
 // Gets the entry point (valid for AMD GPU) of a LLVM module.
 llvm::Function *getEntryPoint(llvm::Module *module);
+
+// Append zero-index elements to vector to match types.
+void appendZeroIndexToMatchTypes(lgc::Builder *builder, llvm::SmallVectorImpl<llvm::Value *> &indexOperands,
+                                 llvm::Type *typeToMatch, llvm::Type *packType);
 
 } // namespace Llpc

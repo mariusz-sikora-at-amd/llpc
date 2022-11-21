@@ -54,11 +54,12 @@ public:
 
   void handleLoadInst();
   void handleLoadInstGlobal(LoadInst &loadInst, const unsigned addrSpace);
-  void handleLoadInstGEP(GetElementPtrInst *const getElemPtr, LoadInst &loadInst, const unsigned addrSpace);
+  void handleLoadInstGEP(SmallVectorImpl<Value *> &indexOperands, LoadInst &loadInst, const unsigned addrSpace,
+                         GlobalVariable *inOut);
 
   void handleStoreInst();
   void handleStoreInstGlobal(StoreInst &storeInst);
-  void handleStoreInstGEP(GetElementPtrInst *const getElemPtr, StoreInst &storeInst);
+  void handleStoreInstGEP(SmallVectorImpl<Value *> &indexOperands, StoreInst &storeInst, GlobalVariable *output);
 
   void handleAtomicInst();
   void handleAtomicInstGlobal(Instruction &atomicInst);
@@ -116,7 +117,8 @@ private:
   llvm::Value *atomicOpWithValueInTaskPayload(llvm::Instruction *atomicInst, llvm::Constant *metadata,
                                               llvm::Value *extraByteOffset);
 
-  void interpolateInputElement(unsigned interpLoc, llvm::Value *interpInfo, llvm::CallInst &callInst);
+  void interpolateInputElement(unsigned interpLoc, llvm::Value *interpInfo, llvm::CallInst &callInst,
+                               SmallVectorImpl<Value *> &indexOperands, GlobalVariable *gv);
 
   std::unordered_map<llvm::Value *, llvm::Value *> m_globalVarProxyMap; // Proxy map for lowering global variables
   std::unordered_map<llvm::Value *, llvm::Value *> m_inputProxyMap;     // Proxy map for lowering inputs

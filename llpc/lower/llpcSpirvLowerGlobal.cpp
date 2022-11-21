@@ -343,26 +343,42 @@ void SpirvLowerGlobal::handleCallInst(bool checkEmitCall, bool checkInterpCall) 
             auxInterpValue = callInst->getArgOperand(1); // Vertex no.
           }
 
-          if (isa<GetElementPtrInst>(loadSrc)) {
+          if (auto getElemPtr = dyn_cast<GetElementPtrInst>(loadSrc)) {
             // The interpolant is an element of the input
-            interpolateInputElement(interpLoc, auxInterpValue, *callInst);
+            SmallVector<Value *, 6> indexOperands;
+            for (auto &index : getElemPtr->indices())
+              indexOperands.push_back(m_builder->CreateZExtOrTrunc(index, m_builder->getInt32Ty()));
+            GlobalVariable *gv = cast<GlobalVariable>(getElemPtr->getPointerOperand());
+            interpolateInputElement(interpLoc, auxInterpValue, *callInst, indexOperands, gv);
           } else {
             // The interpolant is an input
             assert(isa<GlobalVariable>(loadSrc));
 
             auto input = cast<GlobalVariable>(loadSrc);
             auto inputTy = input->getValueType();
+            Type *funcRetType = callInst->getFunctionType()->getReturnType();
 
-            MDNode *metaNode = input->getMetadata(gSPIRVMD::InOut);
-            assert(metaNode);
-            auto inputMeta = mdconst::dyn_extract<Constant>(metaNode->getOperand(0));
+            if (funcRetType == inputTy) {
 
-            m_builder->SetInsertPoint(callInst);
-            auto loadValue = addCallInstForInOutImport(inputTy, SPIRAS_Input, inputMeta, nullptr, 0, nullptr, nullptr,
-                                                       interpLoc, auxInterpValue, false);
+              MDNode *metaNode = input->getMetadata(gSPIRVMD::InOut);
+              assert(metaNode);
+              auto inputMeta = mdconst::dyn_extract<Constant>(metaNode->getOperand(0));
 
-            m_interpCalls.insert(callInst);
-            callInst->replaceAllUsesWith(loadValue);
+              m_builder->SetInsertPoint(callInst);
+              auto loadValue = addCallInstForInOutImport(inputTy, SPIRAS_Input, inputMeta, nullptr, 0, nullptr, nullptr,
+                                                         interpLoc, auxInterpValue, false);
+
+              m_interpCalls.insert(callInst);
+              callInst->replaceAllUsesWith(loadValue);
+            } else {
+              // Type of GlobalVariable and return type of the Call are not the same. This can happen for opaque
+              // pointers because zero-index GEP instructions are removed. In this case we have to build zero-index
+              // vector which is equivalent to zero-index GEP and use "interpolateInputElement".
+              SmallVector<Value *, 6> indexOperands;
+              indexOperands.push_back(m_builder->getInt32(0));
+              appendZeroIndexToMatchTypes(m_builder, indexOperands, funcRetType, inputTy);
+              interpolateInputElement(interpLoc, auxInterpValue, *callInst, indexOperands, input);
+            }
           }
         }
       }
@@ -454,23 +470,17 @@ void SpirvLowerGlobal::handleLoadInstGlobal(LoadInst &loadInst, const unsigned a
 // =====================================================================================================================
 // Handle a single "load" instruction loading a global through a GEP instruction
 //
-// @param getElemPtr : Load source GEP instruction
+// @param indexOperands : Indices of GEP instruction
 // @param loadInst : Load instruction
 // @param addrSpace : Address space
-void SpirvLowerGlobal::handleLoadInstGEP(GetElementPtrInst *const getElemPtr, LoadInst &loadInst,
-                                         const unsigned addrSpace) {
-  std::vector<Value *> indexOperands;
-
-  assert(cast<ConstantInt>(getElemPtr->getOperand(1))->isZero() && "Non-zero GEP first index\n");
-
-  GlobalVariable *inOut = cast<GlobalVariable>(getElemPtr->getPointerOperand());
-  assert(!isa<GetElementPtrInst>(getElemPtr->getPointerOperand()) &&
-         "Chained GEPs should have been coalesced by SpirvLowerAccessChain.");
+// @param inOut : Global Variable instruction
+void SpirvLowerGlobal::handleLoadInstGEP(SmallVectorImpl<Value *> &indexOperands, LoadInst &loadInst,
+                                         const unsigned addrSpace, GlobalVariable *inOut) {
+  assert(cast<ConstantInt>(indexOperands.front())->isZero() && "Non-zero GEP first index\n");
 
   m_builder->SetInsertPoint(&loadInst);
 
-  for (auto &index : drop_begin(getElemPtr->indices()))
-    indexOperands.push_back(m_builder->CreateZExtOrTrunc(index, m_builder->getInt32Ty()));
+  indexOperands.erase(indexOperands.begin());
 
   Value *vertexIdx = nullptr;
   auto inOutTy = inOut->getValueType();
@@ -524,15 +534,40 @@ void SpirvLowerGlobal::handleLoadInst() {
     for (User *user : global.users()) {
       if (LoadInst *loadInst = dyn_cast<LoadInst>(user))
         // The user is a load
-        handleLoadInstGlobal(*loadInst, addrSpace);
+        if (global.getValueType() == loadInst->getType()) {
+          handleLoadInstGlobal(*loadInst, addrSpace);
+        } else {
+          // User of Global Variable is a Load instruction, but type of a Global and type of a Load
+          // are not the same. This can happen when opaque pointers are enabled and zero-index GEP is
+          // removed. In this case, we are building zero-index vector which would be the same as zero-index
+          // GEP before removing it. Later "handleLoadInstGEP" is called to unpack metadata for Global
+          // Variable and create builtins.
+          SmallVector<Value *, 6> indexOperands;
+          // First index is equivalent to "dereference of pointer value"
+          indexOperands.push_back(m_builder->getInt32(0));
+          // Append rest of zero-index elements to match types.
+          appendZeroIndexToMatchTypes(m_builder, indexOperands, loadInst->getType(), global.getValueType());
+          handleLoadInstGEP(indexOperands, *loadInst, addrSpace, &global);
+        }
       else if (GetElementPtrInst *gep = dyn_cast<GetElementPtrInst>(user)) {
         // The user is a GEP
         // We look for load instructions in the GEP users
         for (User *gepUser : gep->users()) {
           // We shouldn't have any chained GEPs here, they are coalesced by the LowerAccessChain pass.
           assert(!isa<GetElementPtrInst>(gepUser));
-          if (LoadInst *loadInst = dyn_cast<LoadInst>(gepUser))
-            handleLoadInstGEP(gep, *loadInst, addrSpace);
+          if (LoadInst *loadInst = dyn_cast<LoadInst>(gepUser)) {
+            SmallVector<Value *, 6> indexOperands;
+            for (auto &index : gep->indices())
+              indexOperands.push_back(m_builder->CreateZExtOrTrunc(index, m_builder->getInt32Ty()));
+            Type *gepRetType = GetElementPtrInst::getIndexedType(gep->getSourceElementType(), indexOperands);
+            // Check if a Load type is the same as indexed type of GEP instruction. Types can be different if opaque
+            // pointers are enabled. Opaque pointers are removing zero-index elements which are at the end of GEP
+            // instruction. These additional zero-index elements are needed to proper unpack metadata for global
+            // variable.
+            if (loadInst->getType() != gepRetType)
+              appendZeroIndexToMatchTypes(m_builder, indexOperands, loadInst->getType(), gepRetType);
+            handleLoadInstGEP(indexOperands, *loadInst, addrSpace, &global);
+          }
         }
       }
     }
@@ -579,23 +614,19 @@ void SpirvLowerGlobal::handleStoreInstGlobal(StoreInst &storeInst) {
 // =====================================================================================================================
 // Handle a single "store" instruction storing a global through a GEP instruction
 //
-// @param getElemPtr : Store destination GEP instruction
+// @param indexOperands : Indices of GEP instruction
 // @param storeInst : Store instruction
-void SpirvLowerGlobal::handleStoreInstGEP(GetElementPtrInst *const getElemPtr, StoreInst &storeInst) {
+// @param output : Global Variable instruction
+void SpirvLowerGlobal::handleStoreInstGEP(SmallVectorImpl<Value *> &indexOperands, StoreInst &storeInst,
+                                          GlobalVariable *output) {
   Value *storeValue = storeInst.getOperand(0);
 
-  std::vector<Value *> indexOperands;
-
-  assert(cast<ConstantInt>(getElemPtr->getOperand(1))->isZero() && "Non-zero GEP first index\n");
-
-  GlobalVariable *output = cast<GlobalVariable>(getElemPtr->getPointerOperand());
-  assert(!isa<GetElementPtrInst>(getElemPtr->getPointerOperand()) &&
-         "Chained GEPs should have been coalesced by SpirvLowerAccessChain.");
+  assert(cast<ConstantInt>(indexOperands.front())->isZero() && "Non-zero GEP first index\n");
 
   m_builder->SetInsertPoint(&storeInst);
 
-  for (auto &index : drop_begin(getElemPtr->indices()))
-    indexOperands.push_back(m_builder->CreateZExtOrTrunc(index, m_builder->getInt32Ty()));
+  // drop first element
+  indexOperands.erase(indexOperands.begin());
 
   Value *vertexOrPrimitiveIdx = nullptr;
   auto outputTy = output->getValueType();
@@ -636,16 +667,43 @@ void SpirvLowerGlobal::handleStoreInst() {
       continue;
     for (User *user : global.users()) {
       if (StoreInst *storeInst = dyn_cast<StoreInst>(user))
-        // The user is a store
-        handleStoreInstGlobal(*storeInst);
+        // The user is a store, check if type of GV and Store are the same.
+        if (global.getValueType() == storeInst->getValueOperand()->getType()) {
+          handleStoreInstGlobal(*storeInst);
+        } else {
+          // User of Global Variable is a Store instruction, but type of a Global and type of a Store
+          // are not the same. This can happen when opaque pointers are enabled and zero-index GEP is
+          // removed. In this case, we are building zero-index vector which would be the same as zero-index
+          // GEP before removing it. Later "handleLoadInstGEP" is called to unpack metadata for Global
+          // Variable and create builtins.
+          SmallVector<Value *, 6> indexOperands;
+          // First index is equivalent to "dereference of pointer value"
+          indexOperands.push_back(m_builder->getInt32(0));
+          // Append rest of zero-index elements to match types.
+          appendZeroIndexToMatchTypes(m_builder, indexOperands, storeInst->getValueOperand()->getType(),
+                                      global.getValueType());
+          handleStoreInstGEP(indexOperands, *storeInst, &global);
+        }
       else if (GetElementPtrInst *gep = dyn_cast<GetElementPtrInst>(user)) {
         // The user is a GEP
         // We look for store instructions in the GEP users
         for (User *gepUser : gep->users()) {
           // We shouldn't have any chained GEPs here, they are coalesced by the LowerAccessChain pass.
           assert(!isa<GetElementPtrInst>(gepUser));
-          if (StoreInst *storeInst = dyn_cast<StoreInst>(gepUser))
-            handleStoreInstGEP(gep, *storeInst);
+          if (StoreInst *storeInst = dyn_cast<StoreInst>(gepUser)) {
+            SmallVector<Value *, 6> indexOperands;
+            for (auto &index : gep->indices())
+              indexOperands.push_back(m_builder->CreateZExtOrTrunc(index, m_builder->getInt32Ty()));
+            Type *gepRetType = GetElementPtrInst::getIndexedType(gep->getSourceElementType(), indexOperands);
+            // Check if a Store type is the same as indexed type of GEP instruction. Types can be different if opaque
+            // pointers are enabled. Opaque pointers are removing zero-index elements which are at the end of GEP
+            // instruction. These additional zero-index elements are needed to proper unpack metadata for global
+            // variable.
+            if (storeInst->getValueOperand()->getType() != gepRetType)
+              appendZeroIndexToMatchTypes(m_builder, indexOperands, storeInst->getValueOperand()->getType(),
+                                          gepRetType);
+            handleStoreInstGEP(indexOperands, *storeInst, &global);
+          }
         }
       }
     }
@@ -2419,6 +2477,15 @@ void SpirvLowerGlobal::lowerBufferBlock() {
               assert(getElemPtr->getNumIndices() >= 2);
               SmallVector<Value *, 8> indices;
 
+              // Check if Global Variable type is the same as GEP source type. For opaque pointers these types can be
+              // different because opaque pointers are removing zero-index GEP instructions. Without opaque pointers
+              // LLVM-IR would contain additional zero-index GEP which will be between "getElemPtr" and "global". These
+              // two GEP instructions would be at some point merged to single one.
+              if (getElemPtr->getSourceElementType() != global.getValueType()) {
+                appendZeroIndexToMatchTypes(m_builder, indices, getElemPtr->getSourceElementType(),
+                                            global.getValueType());
+              }
+
               for (Value *const index : getElemPtr->indices())
                 indices.push_back(index);
 
@@ -2706,25 +2773,29 @@ void SpirvLowerGlobal::cleanupReturnBlock() {
 // "InterpLocSample" - Offset from the center of the pixel for "InterpLocCenter" - Vertex no. (0 ~ 2) for
 // "InterpLocCustom"
 // @param callInst : "Call" instruction
-void SpirvLowerGlobal::interpolateInputElement(unsigned interpLoc, Value *auxInterpValue, CallInst &callInst) {
-  GetElementPtrInst *getElemPtr = cast<GetElementPtrInst>(callInst.getArgOperand(0));
-
-  assert(cast<ConstantInt>(getElemPtr->getOperand(1))->isZero() && "Non-zero GEP first index\n");
+// @param indexOperands : indices of GEP instruction
+// @param gv : Global Variable instruction
+void SpirvLowerGlobal::interpolateInputElement(unsigned interpLoc, Value *auxInterpValue, CallInst &callInst,
+                                               SmallVectorImpl<Value *> &indexOperands, GlobalVariable *gv) {
+  assert(cast<ConstantInt>(indexOperands.front())->isZero() && "Non-zero GEP first index\n");
 
   m_builder->SetInsertPoint(&callInst);
 
-  std::vector<Value *> indexOperands;
-  for (auto &index : getElemPtr->indices())
-    indexOperands.push_back(m_builder->CreateZExtOrTrunc(index, m_builder->getInt32Ty()));
+  auto inputTy = gv->getValueType();
 
-  auto input = cast<GlobalVariable>(getElemPtr->getPointerOperand());
-  auto inputTy = input->getValueType();
-
-  MDNode *metaNode = input->getMetadata(gSPIRVMD::InOut);
+  MDNode *metaNode = gv->getMetadata(gSPIRVMD::InOut);
   assert(metaNode);
   auto inputMeta = mdconst::dyn_extract<Constant>(metaNode->getOperand(0));
 
-  if (getElemPtr->hasAllConstantIndices()) {
+  auto hasAllConstantIndices = [&indexOperands]() {
+    return std::all_of(indexOperands.begin(), indexOperands.end(), [](auto &idx) {
+      if (isa<ConstantInt>(idx))
+        return true;
+      return false;
+    });
+  };
+
+  if (hasAllConstantIndices()) {
     auto loadValue = loadInOutMember(inputTy, SPIRAS_Input, makeArrayRef(indexOperands).drop_front(), 0, inputMeta,
                                      nullptr, nullptr, interpLoc, auxInterpValue, false);
 
