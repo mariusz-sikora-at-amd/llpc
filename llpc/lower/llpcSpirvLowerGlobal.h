@@ -54,12 +54,11 @@ public:
 
   void handleLoadInst();
   void handleLoadInstGlobal(LoadInst &loadInst, const unsigned addrSpace);
-  void handleLoadInstGEP(SmallVectorImpl<Value *> &indexOperands, LoadInst &loadInst, const unsigned addrSpace,
-                         GlobalVariable *inOut);
+  void handleLoadInstGEP(GlobalVariable *inOut, ArrayRef<Value *> indexOperands, LoadInst &loadInst);
 
   void handleStoreInst();
   void handleStoreInstGlobal(StoreInst &storeInst);
-  void handleStoreInstGEP(SmallVectorImpl<Value *> &indexOperands, StoreInst &storeInst, GlobalVariable *output);
+  void handleStoreInstGEP(GlobalVariable *output, ArrayRef<Value *> indexOperands, StoreInst &storeInst);
 
   void handleAtomicInst();
   void handleAtomicInstGlobal(Instruction &atomicInst);
@@ -95,19 +94,20 @@ private:
                                    Constant *inOutMetaVal, Value *locOffset, unsigned interpLoc, Value *auxInterpValue,
                                    bool isPerVertexDimension);
 
-  llvm::Value *loadInOutMember(llvm::Type *inOutTy, unsigned addrSpace, llvm::ArrayRef<llvm::Value *> indexOperands,
-                               unsigned maxLocOffset, llvm::Constant *inOutMeta, llvm::Value *locOffset,
-                               llvm::Value *vertexIdx, unsigned interpLoc, llvm::Value *interpInfo,
-                               bool isPerVertexDimension);
+  llvm::Value *loadInOutMember(llvm::Type *inOutTy, llvm::Type *loadType, unsigned addrSpace,
+                               llvm::ArrayRef<llvm::Value *> indexOperands, unsigned maxLocOffset,
+                               llvm::Constant *inOutMeta, llvm::Value *locOffset, llvm::Value *vertexIdx,
+                               unsigned interpLoc, llvm::Value *interpInfo, bool isPerVertexDimension);
 
-  void storeOutputMember(llvm::Type *outputTy, llvm::Value *storeValue, llvm::ArrayRef<llvm::Value *> indexOperands,
-                         unsigned maxLocOffset, llvm::Constant *outputMeta, llvm::Value *locOffset,
-                         llvm::Value *vertexOrPrimitiveIdx);
+  void storeOutputMember(llvm::Type *outputTy, llvm::Type *storeTy, llvm::Value *storeValue,
+                         llvm::ArrayRef<llvm::Value *> indexOperands, unsigned maxLocOffset, llvm::Constant *outputMeta,
+                         llvm::Value *locOffset, llvm::Value *vertexOrPrimitiveIdx);
 
-  llvm::Value *loadIndexedValueFromTaskPayload(llvm::Type *indexedTy, llvm::ArrayRef<llvm::Value *> indexOperands,
-                                               llvm::Constant *metadata, llvm::Value *extraByteOffset);
+  llvm::Value *loadIndexedValueFromTaskPayload(llvm::Type *indexedTy, llvm::Type *loadTy,
+                                               llvm::ArrayRef<llvm::Value *> indexOperands, llvm::Constant *metadata,
+                                               llvm::Value *extraByteOffset);
   llvm::Value *loadValueFromTaskPayload(llvm::Type *loadTy, llvm::Constant *metadata, llvm::Value *extraByteOffset);
-  void storeIndexedValueToTaskPayload(llvm::Type *indexedTy, llvm::Value *storeValue,
+  void storeIndexedValueToTaskPayload(llvm::Type *indexedTy, llvm::Type *storeTy, llvm::Value *storeValue,
                                       llvm::ArrayRef<llvm::Value *> indexOperands, llvm::Constant *metadata,
                                       llvm::Value *extraByteOffset);
   void storeValueToTaskPayload(llvm::Value *storeValue, llvm::Constant *metadata, llvm::Value *extraByteOffse);
@@ -118,7 +118,7 @@ private:
                                               llvm::Value *extraByteOffset);
 
   void interpolateInputElement(unsigned interpLoc, llvm::Value *interpInfo, llvm::CallInst &callInst,
-                               SmallVectorImpl<Value *> &indexOperands, GlobalVariable *gv);
+                               GlobalVariable *gv, ArrayRef<Value *> indexOperands);
 
   std::unordered_map<llvm::Value *, llvm::Value *> m_globalVarProxyMap; // Proxy map for lowering global variables
   std::unordered_map<llvm::Value *, llvm::Value *> m_inputProxyMap;     // Proxy map for lowering inputs
